@@ -282,42 +282,59 @@ def kpis_html(me: dict) -> str:
     )
 
 
-def amount_picker(label: str, max_m: float, key: str) -> int:
-    if max_m > 0.1:
-        m = st.slider(label, 0.1, max_m, min(1.0, max_m), 0.1, format="%.1f M€", key=key)
+def amount_picker(label: str, max_amount: int, key: str) -> int:
+    step = E.STEP
+    if max_amount > step:
+        m = st.slider(label, step / 1e6, max_amount / 1e6, min(1.0, max_amount / 1e6), step / 1e6, format="%.1f M€", key=key)
     else:
-        m = 0.1
-        st.caption(f"{label}: 0,1 M€")
+        m = step / 1e6
+        st.caption(f"{label}: {m:.1f} M€".replace(".", ","))
     return round(m * 1_000_000)
 
 
 def decision_panel(game: E.Game, pid: str, me: dict):
     o = me["offer"]
     d = me["day"]
+    if d > 1:
+        bp = o["change_bp"]
+        trend = "sube" if bp > 0 else "baja" if bp < 0 else "se mantiene"
+        st.caption(f"Los tipos hoy {trend}" + (f" {abs(bp)} pb respecto a ayer." if bp else " respecto a ayer."))
     inv_tab, fin_tab = st.tabs(["Invertir", "Financiarme"])
     with inv_tab:
         st.markdown(
             f"El banco te ofrece **{E.fmt_pct(o['invest_rate'])}** anual y te devuelve el dinero el "
-            f"**día {o['return_day']}**. Por cada 1 M€ cobrarías {E.fmt_eur(o['invest_per_million'], 0)} de intereses. "
-            "Mientras tanto no podrás usar ese dinero."
+            f"**día {o['return_day']}**. Mientras tanto no podrás usar ese dinero."
         )
-        max_m = math.floor(max(me["cash"], 0) / 100_000) / 10
-        if max_m < 0.1:
+        max_amount = int(max(me["cash"], 0) // E.STEP) * E.STEP
+        if max_amount < E.STEP:
             st.warning("No tienes caja para invertir.")
         else:
-            with st.form(f"inv-{d}"):
-                amount = amount_picker("Importe a invertir", max_m, f"inv-amt-{d}")
-                if st.form_submit_button("Invertir", type="primary", use_container_width=True):
-                    ok, msg = game.act(pid, "invest", amount)
-                    st.rerun() if ok else st.error(msg)
+            amount = amount_picker("Importe a invertir", max_amount, f"inv-amt-{d}")
+            interest = round(amount * o["invest_rate"] * (o["return_day"] - d) / E.BASIS, 2)
+            st.info(
+                f"El día {o['return_day']} recibirías **{E.fmt_eur(amount + interest, 2)}** "
+                f"({E.fmt_eur(amount)} + {E.fmt_eur(interest, 2)} de intereses)."
+            )
+            if st.button("Invertir", type="primary", use_container_width=True, key=f"inv-{d}"):
+                ok, msg = game.act(pid, "invest", amount)
+                st.rerun() if ok else st.error(msg)
     with fin_tab:
         st.markdown(
             f"Te financias al **{E.fmt_pct(o['finance_rate'])}** anual (20 pb más que lo que paga el banco por invertir) "
-            f"y lo repagas el **día {E.LAST_DAY}**. Por cada 1 M€ pagarías {E.fmt_eur(o['finance_per_million'], 0)} de intereses."
+            f"y lo repagas el **día {E.LAST_DAY}**."
         )
-        with st.form(f"fin-{d}"):
-            amount = amount_picker("Importe a financiar", E.MAX_FINANCE / 1e6, f"fin-amt-{d}")
-            if st.form_submit_button("Financiarme", type="primary", use_container_width=True):
+        room_left = int(E.MAX_FINANCE - me["debt"])
+        if room_left < E.STEP:
+            st.warning(f"Has alcanzado el límite de deuda ({E.fmt_eur(E.MAX_FINANCE)}).")
+        else:
+            st.caption(f"Límite de deuda total: {E.fmt_eur(E.MAX_FINANCE)}.")
+            amount = amount_picker("Importe a financiar", room_left, f"fin-amt-{d}")
+            interest = round(amount * o["finance_rate"] * (E.LAST_DAY - d) / E.BASIS, 2)
+            st.info(
+                f"El día {E.LAST_DAY} devolverías **{E.fmt_eur(amount + interest, 2)}** "
+                f"({E.fmt_eur(amount)} + {E.fmt_eur(interest, 2)} de intereses)."
+            )
+            if st.button("Financiarme", type="primary", use_container_width=True, key=f"fin-{d}"):
                 ok, msg = game.act(pid, "finance", amount)
                 st.rerun() if ok else st.error(msg)
     if st.button("No hacer nada hoy", use_container_width=True, key=f"skip-{d}"):

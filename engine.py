@@ -12,7 +12,10 @@ START_CASH = 5_000_000
 LAST_DAY = 16  # día de liquidación: se devuelve todo y termina el juego
 SPREAD = 0.0020  # financiarse cuesta 20 pb más que lo que paga el banco por invertir
 BASIS = 360
-MAX_FINANCE = 10_000_000
+START_RATE = 3.0  # % anual de partida
+MAX_RATE_MOVE = 1.0  # los tipos nunca se alejan más de 100 pb del inicial
+STEP = 500_000  # paso de los deslizadores
+MAX_FINANCE = 4_500_000  # deuda total máxima por jugador
 MAX_PLAYERS = 80
 BLOCKED_SECONDS = 10  # duración de los días con pago obligatorio (no se opera)
 ALL_DONE_SECONDS = 3  # cuenta atrás cuando todos han decidido
@@ -92,10 +95,11 @@ class Game:
     # ---------- configuración determinista (misma para todos) ----------
     def _build_market(self) -> dict[int, float]:
         rng = random.Random(f"{self.seed}-mkt")
-        rate = 3.0
+        rate = START_RATE
         out = {}
         for d in range(1, LAST_DAY + 1):
-            rate = min(5.0, max(2.0, rate + rng.choice([-0.10, -0.05, 0.0, 0.05, 0.10])))
+            rate += rng.choice([-0.20, -0.10, -0.05, 0.0, 0.05, 0.10, 0.20])
+            rate = min(START_RATE + MAX_RATE_MOVE, max(START_RATE - MAX_RATE_MOVE, rate))
             out[d] = round(rate / 100, 4)
         return out
 
@@ -154,7 +158,7 @@ class Game:
             if kind == "skip":
                 p.actions[d] = {"kind": "skip"}
             elif kind == "invest":
-                if amount <= 0 or amount > p.cash:
+                if amount <= 0 or amount % STEP or amount > p.cash:
                     return False, "No tienes caja suficiente."
                 end = self._return_day(pid, d)
                 p.cash -= amount
@@ -162,8 +166,10 @@ class Game:
                 p.actions[d] = {"kind": "invest", "amount": amount, "rate": market, "end": end}
                 p.log.append((d, f"Inviertes {fmt_eur(amount)} al {fmt_pct(market)}; te lo devuelven el día {end}."))
             elif kind == "finance":
-                if amount <= 0 or amount > MAX_FINANCE:
+                if amount <= 0 or amount % STEP:
                     return False, "Importe no válido."
+                if sum(x["amount"] for x in p.debts) + amount > MAX_FINANCE:
+                    return False, f"Tu deuda total no puede superar {fmt_eur(MAX_FINANCE)}."
                 rate = round(market + SPREAD, 4)
                 p.cash += amount
                 p.debts.append({"amount": amount, "rate": rate, "start": d})
@@ -294,8 +300,7 @@ class Game:
                     "invest_rate": m,
                     "finance_rate": round(m + SPREAD, 4),
                     "return_day": r,
-                    "invest_per_million": 1_000_000 * m * (r - d) / BASIS,
-                    "finance_per_million": 1_000_000 * (m + SPREAD) * (LAST_DAY - d) / BASIS,
+                    "change_bp": round((m - self.market[d - 1]) * 10_000) if d > 1 else 0,
                 }
             rank = None
             if self.phase == "finished" and p.status == "alive":
